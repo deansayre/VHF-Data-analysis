@@ -1,19 +1,28 @@
 ---
-title: "Untitled"
-output: html_document
-date: "2026-09-29"
+title: "Tracked indicator association with onward transmission -- EVD in Eastern DRC, 2018-20"
+author: 
+  - Dean Sayre^[United States Centers for Disease Control and Prevention, omp2@cdc.gov]
+date: "`r format(Sys.time(), '%A %d %B %Y')`"
+output: 
+  html_document:
+    code_folding: hide
+    code_download: true
+    highlight: zenburn
+    number_sections: no
+    theme: spacelab    
+    toc: no
 ---
 
+
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 8)
+
 ```
 
-```{r}
-pacman::p_load(EpiEstim, 
-               slider,
-               rio, 
-               tidyverse)
-```
+
+# Data loading and wrangling
 
 ```{r}
 
@@ -58,6 +67,10 @@ inc_1 <- inc_pre %>%
          isolation_binary = case_when(community_death == 1|delay_admission > 3 ~ "no", 
                                       delay_admission <= 3 ~ "yes")
          ) 
+```
+
+
+```{r}
 
 inc <- inc_1 %>% 
   group_by(iso_week) %>% 
@@ -101,59 +114,6 @@ overlap <- map(list(2,3),
 
 options <- append(sequential, overlap) %>% 
   set_names("seq_2", "seq_3", "overlap_2", "overlap_3")
-
-
-a1 <- map(options, 
-    ~map2(.x[[1]], .x[[2]], 
-          function(a,b) {
-            inc %>% 
-              slice(a:b) %>% 
-              summarise(community_death_prop = sum(n_community_death, na.rm = TRUE)/
-                          sum(community_death_den, na.rm = TRUE), 
-                        isolated_early_prop = sum(n_isolated_early, na.rm = TRUE)/
-                          sum(isolated_early_den, na.rm = TRUE), 
-                        contact_prop = sum(n_contact_registered, na.rm = TRUE)/
-                          sum(contact_registered_den, na.rm = TRUE))
-          }) %>% 
-      bind_rows() %>% 
-      mutate(n = row_number())) %>% 
-  set_names(names(options))
-
-
-graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
-                       mutate(n = row_number())), 
-     ~left_join(.x, .y, by = "n")) %>% 
-  bind_rows(.id = "algo")
-
-ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = community_death_prop, group = algo, color = algo))
-
-ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))
-
-ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))
-
-
-a <- map(options, 
-    ~map2(.x[[1]], .x[[2]], 
-          function(a,b) {
-            seq(a, b, 1)
-          })) %>% 
-  set_names(names(options))
-
-
-
-test <- tibble(n = a[[1]]) %>% 
-  bind_rows() %>% 
-  mutate(group = row_number()) %>% 
-  unnest_longer(n)
-  
-  
-  
-  
-  mutate(var = case_when(n))
-
 
 
 r_est_i_list <-map(options, 
@@ -227,6 +187,100 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
 
 
 ```
+
+## Indicators over time {.tabset}
+
+```{r}
+
+a1 <- map(options, 
+    ~map2(.x[[1]], .x[[2]], 
+          function(a,b) {
+            inc %>% 
+              slice(a:b) %>% 
+              summarise(community_death_prop = sum(n_community_death, na.rm = TRUE)/
+                          sum(community_death_den, na.rm = TRUE), 
+                        isolated_early_prop = sum(n_isolated_early, na.rm = TRUE)/
+                          sum(isolated_early_den, na.rm = TRUE), 
+                        contact_prop = sum(n_contact_registered, na.rm = TRUE)/
+                          sum(contact_registered_den, na.rm = TRUE))
+          }) %>% 
+      bind_rows() %>% 
+      mutate(n = row_number())) %>% 
+  set_names(names(options))
+
+
+graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+                       mutate(n = row_number())), 
+     ~left_join(.x, .y, by = "n")) %>% 
+  bind_rows(.id = "algo")
+
+```
+
+### Community Deaths
+
+```{r}
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = community_death_prop, 
+                group = algo, color = algo))+  
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = "Week Number", 
+       y = "Proportion of New Cases",
+       color = "Configuration", 
+       title = NULL)
+  
+
+```
+
+
+### Known contact of case at time of diagnosis
+
+```{r}
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = "Week Number", 
+       y = "Proportion of New Cases",
+       color = "Configuration", 
+       title = NULL)
+
+
+
+```
+
+### Early Isolation
+
+```{r}
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = "Week Number", 
+       y = "Proportion of New Cases",
+       color = "Configuration", 
+       title = NULL)
+
+
+```
+
+
+
 
 ```{r}
 
