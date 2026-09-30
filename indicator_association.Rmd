@@ -313,7 +313,9 @@ graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>%
 
 ggplot(graph_indicator)+
   geom_line(aes(x = x, y = community_death_prop, 
-                group = algo, color = algo))+  
+                group = algo, color = algo), 
+            linewidth = 1.2,
+            alpha = 0.6)+  
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
                                 "#b0dbe2", 
@@ -334,7 +336,9 @@ ggplot(graph_indicator)+
 ```{r}
 
 ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))+
+  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo), 
+            linewidth = 1.2,
+            alpha = 0.6)+  
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
                                 "#b0dbe2", 
@@ -355,7 +359,9 @@ ggplot(graph_indicator)+
 ```{r}
 
 ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))+
+  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo), 
+            linewidth = 1.2,
+            alpha = 0.6)+  
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
                                 "#b0dbe2", 
@@ -374,7 +380,6 @@ ggplot(graph_indicator)+
 
 
 ```{r}
-
 
 inc_prov <- inc_1 %>% 
   filter(province != "unknown") %>% 
@@ -488,7 +493,7 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
 
 ## By Province {.tabset}
 
-### Epi curve and estimated reproduction number over time {.tabset.tabset-pills}
+### Epi curve and estimated reproduction number over time {.tabset}
 
 #### Ituri
 ```{r}
@@ -502,17 +507,18 @@ province_plots[["nord_kivu"]]
 ```
 
 
-
-### Indicators over time {.tabset.tabset-pills}
+### Indicators over time {.tabset}
 
 ```{r}
-inc_prov
 
-a2 <- map(options, 
+a2 <- map(inc_prov, 
+          function(a1){
+            map(options, 
           ~map2(.x[[1]], .x[[2]], 
                 
                       function(a,b) {
-                        inc_prov[[1]] %>% 
+                        
+                        a1 %>% 
                           slice(a:b) %>% 
                           summarise(community_death_prop = sum(n_community_death, 
                                                                na.rm = TRUE)/
@@ -525,18 +531,100 @@ a2 <- map(options,
                                       sum(contact_registered_den, na.rm = TRUE))
                         }) %>% 
       bind_rows() %>% 
-      mutate(n = row_number()) %>% 
-  set_names(names(options)))
+      mutate(n = row_number()))
+            }
+      )
 
 
-graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+graph_indicator_prov <- map(a2, 
+                       ~map2(.x, map(options, ~tibble(x = pluck(.x, 1)) %>% 
                        mutate(n = row_number())), 
      ~left_join(.x, .y, by = "n")) %>% 
-  bind_rows(.id = "algo")
+  bind_rows(.id = "algo"))
+
+
+ind_graph <- function(db, x = x, ind, group = algo){
+  
+  ggplot(db)+
+  geom_line(aes(x = x, y = .data[[ind]],
+                group = algo, 
+                color = algo), 
+            linewidth = 1.2,
+            alpha = 0.6)+  
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = "Week Number", 
+       y = "Proportion of New Cases",
+       color = "Configuration", 
+       title = NULL)
+}
 
 ```
 
 
+#### Ituri {.tabset .tabset-pills}
+
+##### Community Deaths
+```{r}
+
+db <- graph_indicator_prov[["ituri"]]
+
+ind_graph(db, ind = "community_death_prop")
+
+```
+
+##### Known Contact
+
+```{r}
+
+ind_graph(db, ind = "contact_prop")
+
+```
+
+
+##### Early Isolation
+
+```{r}
+
+ind_graph(db, ind = "isolated_early_prop")
+
+```
+
+
+#### North Kivu {.tabset .tabset-pills}
+
+##### Community Deaths
+```{r}
+
+db <- graph_indicator_prov[["nord_kivu"]]
+
+ind_graph(db, ind = "community_death_prop")
+
+```
+
+##### Known Contact
+
+```{r}
+
+ind_graph(db, ind = "contact_prop")
+
+```
+
+
+##### Early Isolation
+
+```{r}
+
+ind_graph(db, ind = "isolated_early_prop")
+
+```
+
+
+## By Health Zone {.tabset}
 
 ```{r}
 
@@ -547,20 +635,20 @@ inc_zone <- inc_1 %>%
   map(~.x %>% 
   group_by(iso_week) %>% 
   summarise(count = n(), 
-            n_community_death = sum(community_death, na.rm = TRUE)/sum(!is.na(community_death)), 
-            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE)/sum(!is.na(isolation_binary)), 
-            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE)/
-              sum(contact_registered %in% c("no", "yes"), na.rm = TRUE)) %>% 
+            n_community_death = sum(community_death, na.rm = TRUE), 
+            community_death_den = sum(!is.na(community_death)), 
+            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE), 
+            isolated_early_den = sum(!is.na(isolation_binary)), 
+            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE), 
+            contact_registered_den = sum(contact_registered %in% c("no", "yes"), 
+                                         na.rm = TRUE)) %>% 
   ungroup() %>% 
   right_join(years_weeks, by = c("iso_week" = "value")) %>% 
   mutate(count = case_when(is.na(count) ~ 0, 
                            .default = count), 
          iso_week = factor(iso_week, levels = sort(.$iso_week))) %>% 
   arrange(iso_week) %>% 
-  mutate(n = row_number(), 
-         community_death_slider = slide_dbl(n_community_death, mean, .before = 2), 
-         isolation_slider = slide_dbl(n_isolated_early, mean, .before = 2), 
-         contact_slider = slide_dbl(n_contact_registered, mean, .before = 2))
+  mutate(n = row_number())
   )
 
 zone_remove <- map(inc_zone, 
@@ -572,7 +660,22 @@ zone_remove <- map(inc_zone,
 inc_zone1 <- inc_zone %>% 
   discard_at(zone_remove$name)
 
-r_est_zone_list <-map(inc_zone1, 
+r_est_zone_list_wt <-map(inc_zone1, 
+                   function(y)
+                     {map(options, 
+                          function(x){
+                            wallinga_teunis(
+                              incid = cases_d_i,
+                              method = "parametric_si", 
+                              config = list(mean_si = 15.3/7,
+                                            std_si = 7.3/7,
+                                            n_sim = 100,
+                                            t_start = x[[1]],
+                                            t_end = x[[2]], 
+                                            seed = 3684))
+                            })})
+
+r_est_zone_list_cori <-map(inc_zone1, 
                    function(y)
                      {map(options, 
                           function(x){
@@ -581,45 +684,53 @@ r_est_zone_list <-map(inc_zone1,
                               method = "parametric_si", 
                               config = make_config(list(mean_si = 15.3/7,
                                             std_si = 7.3/7,
-                                          #  method = "parametric_si",
-                                          #  n_sim = 100,
                                             t_start = x[[1]],
-                                            t_end = x[[2]]
-                                           # seed = 3684
-                                          )))
-                            })})
+                                            t_end = x[[2]])))
+                            }) %>% 
+                       set_names(~paste(.x, "_cori"))
+                     })
+
+
+r_est_zone_list <- map2(r_est_zone_list_wt, r_est_zone_list_cori, 
+                        append)
 
 
 
 zone_plots <- map2(r_est_zone_list,
-          inc_zone1,
-         function(x, z){
-           prov_db <- map(x, 
-                          function(y){
-                            as.data.frame(y[["R"]])[, c("t_start",
+                   inc_zone1,
+                   
+                   function(x, z){
+                     prov_db <- map(x, 
+                                    function(y){
+                                      as.data.frame(y[["R"]])[, c("t_start",
                                   "Mean(R)",
                                   "Std(R)", 
                                   "Quantile.0.025(R)",
-                                  "Quantile.0.975(R)")]}) %>%
-             set_names(names(.)) %>% 
-             bind_rows(.id = "config")
+                                  "Quantile.0.975(R)")]}
+                                  ) %>%
+                       set_names(names(.)) %>% 
+                       bind_rows(.id = "config") %>% 
+                       mutate(model = case_when(str_detect(config, "_cori") ~ "Cori", 
+                                                .default = "Wallinga Teunis"), 
+                              color = str_trim(str_remove_all(config, "_cori")))
            
            
            epi_curve <- ggplot(z)+
-  geom_col(aes(x = n, y = count), fill = "grey", color = "black")+
-  theme_minimal()+
-  coord_cartesian(xlim = c(0, 104))+
-  labs(x = NULL, 
-       y = "Cases", 
-       title = "Epidemiological Curve")
+             geom_col(aes(x = n, y = count), fill = "grey", color = "black")+
+             theme_minimal()+
+             coord_cartesian(xlim = c(0, 104))+
+             labs(x = NULL, 
+                  y = "Cases", 
+                  title = "Epidemiological Curve")
            
            b <- ggplot(prov_db)+
              geom_line(aes(x = t_start, 
                 y = `Mean(R)`, 
                 group = config, 
-                color = config), 
-            linewidth = 1.2,
-            alpha = 0.6)+
+                color = color, 
+                linetype = model), 
+                linewidth = 1.2,
+                alpha = 0.6)+
   geom_hline(yintercept = 1, linetype = "dashed")+
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
@@ -629,6 +740,7 @@ zone_plots <- map2(r_est_zone_list,
   coord_cartesian(xlim = c(0, max_n))+
   labs(x = "Week Number", 
        color = "Configuration", 
+       linetype = "Model",
        title = "Estimated R")
 
 cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
@@ -637,7 +749,76 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
                    axis = "tblr")  
 })
 
+a3 <- map(inc_zone1, 
+          function(a1){
+            map(options, 
+          ~map2(.x[[1]], .x[[2]], 
+                
+                      function(a,b) {
+                        
+                        a1 %>% 
+                          slice(a:b) %>% 
+                          summarise(community_death_prop = sum(n_community_death, 
+                                                               na.rm = TRUE)/
+                                      sum(community_death_den, na.rm = TRUE), 
+                                    isolated_early_prop = sum(n_isolated_early, 
+                                                              na.rm = TRUE)/
+                                      sum(isolated_early_den, na.rm = TRUE), 
+                                    contact_prop = sum(n_contact_registered, 
+                                                       na.rm = TRUE)/
+                                      sum(contact_registered_den, na.rm = TRUE))
+                        }) %>% 
+      bind_rows() %>% 
+      mutate(n = row_number()))
+            }
+      )
 
 
+graph_indicator_zs <- map(a3, 
+                       ~map2(.x, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+                       mutate(n = row_number())), 
+                       ~left_join(.x, .y, by = "n")) %>% 
+       bind_rows(.id = "algo"))
+
+indicator_panel <- map(graph_indicator_zs, 
+    function(db1){
+      
+      top <- ind_graph(db1, ind = "community_death_prop")
+      
+      mid <- ind_graph(db1, ind = "contact_prop")
+      
+      bottom <-  ind_graph(db1, ind = "isolated_early_prop")
+      
+      out <- cowplot::plot_grid(top, mid, bottom, ncol = 1, 
+                         align = "hv", 
+                         axis = "tblr", 
+                         labels = c("Community Deaths", 
+                                    "Known Contacts", 
+                                    "Isolated Early"))
+      return(out)
+      
+    })
+
+plots_out <- map2(zone_plots, indicator_panel, 
+     ~cowplot::plot_grid(.x, .y, ncol = 2, align = "hv", axis = "tblr")) %>% 
+  set_names(~str_to_title(str_replace_all(.x, "_", " ")))
+
+# flexibly makes tabs graphs made in list form
+
+ make_tab <- function(graph, name) {         
+   cat("::: {.panel}\n")                     # Open tab
+   cat("###", name, "{.panel-name}\n")       # Label tab
+ 
+   print(graph)                              # Display plot
+   
+   cat("\n")                                 # Space
+   cat(":::\n")                              # Close tab
+ }
+ 
+
+```
+
+```{r results = 'asis'}
+walk2(plots_out, names(plots_out), ~make_tab(.x, .y))
 ```
 
