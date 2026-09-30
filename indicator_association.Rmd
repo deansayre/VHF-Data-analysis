@@ -1,0 +1,435 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-09-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+pacman::p_load(EpiEstim, 
+               slider,
+               rio, 
+               tidyverse)
+```
+
+```{r}
+
+linelist <- rio::import(here::here("data", "Ebola_North_kivu_10th_outbreak_2018", 
+                       "master_linelist_current - deidentified fo 2026.xlsx"))
+
+
+ditch_weeks <- map(seq(1,isoweek(min(linelist$onset_calc, na.rm = TRUE))-1,1), 
+                   ~paste0(2018, "_W",  str_pad(.x,
+                                                side = "left", pad = "0", width = 2))
+) %>% 
+  append(map(seq(isoweek(max(linelist$onset_calc, na.rm = TRUE))+1, 53), 
+             ~paste0(2020, "_W", str_pad(.x, 
+                                         side = "left", 
+                                         pad = "0", 
+                                         width = 2)))
+  )
+
+inc_pre <- linelist %>% 
+  mutate(date_onset = case_when(is.na(onset_calc) & community_death == 1 & 
+                                  !is.na(date_death) ~ date_death - ddays(8), 
+                                .default = onset_calc), 
+         year = isoyear(date_onset))
+
+years <- unique(inc_pre$year)
+years <- years[!is.na(years)]
+
+years_weeks <- map(years, 
+         function(x){
+           paste0(x, "_W",  str_pad(seq(1,isoweek(paste0(x, "-12-28")), 1),
+                                    side = "left", pad = "0", width = 2))
+         }
+         ) %>% 
+  unlist() %>% 
+  setdiff(ditch_weeks) %>% 
+  as_tibble()
+
+inc_1 <- inc_pre %>% 
+  mutate(
+         date_onset = ymd(onset_calc), 
+         iso_week = paste0(isoyear(onset_calc), "_W", str_pad(isoweek(onset_calc), side = "left", pad ="0", width =  2)), 
+         isolation_binary = case_when(community_death == 1|delay_admission > 3 ~ "no", 
+                                      delay_admission <= 3 ~ "yes")
+         ) 
+
+inc <- inc_1 %>% 
+  group_by(iso_week) %>% 
+  summarise(count = n(), 
+            n_community_death = sum(community_death, na.rm = TRUE), 
+            community_death_den = sum(!is.na(community_death)), 
+            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE), 
+            isolated_early_den = sum(!is.na(isolation_binary)), 
+            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE), 
+            contact_registered_den = sum(contact_registered %in% c("no", "yes"), na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  right_join(years_weeks, by = c("iso_week" = "value")) %>% 
+  mutate(count = case_when(is.na(count) ~ 0, 
+                           .default = count), 
+         iso_week = factor(iso_week, levels = sort(.$iso_week))) %>% 
+  arrange(iso_week) %>% 
+  mutate(n = row_number(), 
+         community_death_slider = slide_dbl(n_community_death, mean, .before = 2), 
+         isolation_slider = slide_dbl(n_isolated_early, mean, .before = 2), 
+         contact_slider = slide_dbl(n_contact_registered, mean, .before = 2))
+
+cases_d_i <- inc$count
+
+sequential <- map(list(2,3), 
+    function(x){
+      window_width <- x
+      t_start <- seq(2, 104 - window_width + 1, by = window_width)
+      t_end   <- t_start + window_width - 1
+      return(list(t_start, t_end))
+      }
+    )
+
+overlap <- map(list(2,3), 
+    function(x){
+      window_width <- x
+      t_start <- seq(2, 104 - window_width + 1, by = 1)
+      t_end   <- t_start + window_width -1
+      return(list(t_start, t_end))
+      }
+    )
+
+options <- append(sequential, overlap) %>% 
+  set_names("seq_2", "seq_3", "overlap_2", "overlap_3")
+
+
+a1 <- map(options, 
+    ~map2(.x[[1]], .x[[2]], 
+          function(a,b) {
+            inc %>% 
+              slice(a:b) %>% 
+              summarise(community_death_prop = sum(n_community_death, na.rm = TRUE)/
+                          sum(community_death_den, na.rm = TRUE), 
+                        isolated_early_prop = sum(n_isolated_early, na.rm = TRUE)/
+                          sum(isolated_early_den, na.rm = TRUE), 
+                        contact_prop = sum(n_contact_registered, na.rm = TRUE)/
+                          sum(contact_registered_den, na.rm = TRUE))
+          }) %>% 
+      bind_rows() %>% 
+      mutate(n = row_number())) %>% 
+  set_names(names(options))
+
+
+graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+                       mutate(n = row_number())), 
+     ~left_join(.x, .y, by = "n")) %>% 
+  bind_rows(.id = "algo")
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = community_death_prop, group = algo, color = algo))
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))
+
+ggplot(graph_indicator)+
+  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))
+
+
+a <- map(options, 
+    ~map2(.x[[1]], .x[[2]], 
+          function(a,b) {
+            seq(a, b, 1)
+          })) %>% 
+  set_names(names(options))
+
+
+
+test <- tibble(n = a[[1]]) %>% 
+  bind_rows() %>% 
+  mutate(group = row_number()) %>% 
+  unnest_longer(n)
+  
+  
+  
+  
+  mutate(var = case_when(n))
+
+
+
+r_est_i_list <-map(options, 
+    function(x){
+      wallinga_teunis(
+        incid = cases_d_i,
+        method = "parametric_si", 
+        config = list(mean_si = 15.3/7,
+                std_si = 7.3/7,
+                method = "parametric_si",
+                n_sim = 100,
+                t_start = x[[1]],
+                t_end = x[[2]], 
+                seed = 3684))
+    })
+
+# r_est_i1 <- wallinga_teunis(
+#   incid = cases_d_i,
+#   method = "parametric_si", 
+#   config = list(mean_si = 15.3/7,
+#                 std_si = 7.3/7,
+#                 method = "parametric_si",
+#                 n_sim = 100,
+#                 t_start = t_start,
+#                 t_end = t_end, 
+#                 seed = 3684)
+#   )
+
+
+a <- map(r_est_i_list, 
+    ~as.data.frame(.x[["R"]])[, c("t_start",
+                                  "Mean(R)",
+                                  "Std(R)", 
+                                  "Quantile.0.025(R)",
+                                  "Quantile.0.975(R)")]) %>% 
+      set_names(names(r_est_i_list)) %>% 
+  bind_rows(.id = "config")
+
+max_n <- max(inc$n)
+
+epi_curve <- ggplot(inc)+
+  geom_col(aes(x = n, y = count), fill = "grey", color = "black")+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, max_n))+
+  labs(x = NULL, 
+       y = "Cases", 
+       title = "Epidemiological Curve")
+
+b <- ggplot(a)+
+  geom_line(aes(x = t_start, 
+                y = `Mean(R)`, 
+                group = config, 
+                color = config), 
+            linewidth = 1.2,
+            alpha = 0.6)+
+  geom_hline(yintercept = 1, linetype = "dashed")+
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, max_n))+
+  labs(x = "Week Number", 
+       color = "Configuration", 
+       title = "Estimated R")
+
+cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
+                   rel_heights = c(1,-0.05, 1),
+                   align = "hv", 
+                   axis = "tblr")
+
+
+```
+
+```{r}
+
+inc_prov <- inc_1 %>% 
+  filter(province != "unknown") %>% 
+  split(.$province) %>% 
+  map(~.x %>% 
+  group_by(iso_week) %>% 
+  summarise(count = n(), 
+            n_community_death = sum(community_death, na.rm = TRUE)/sum(!is.na(community_death)), 
+            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE)/sum(!is.na(isolation_binary)), 
+            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE)/
+              sum(contact_registered %in% c("no", "yes"), na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  right_join(years_weeks, by = c("iso_week" = "value")) %>% 
+  mutate(count = case_when(is.na(count) ~ 0, 
+                           .default = count), 
+         iso_week = factor(iso_week, levels = sort(.$iso_week))) %>% 
+  arrange(iso_week) %>% 
+  mutate(n = row_number(), 
+         community_death_slider = slide_dbl(n_community_death, mean, .before = 2), 
+         isolation_slider = slide_dbl(n_isolated_early, mean, .before = 2), 
+         contact_slider = slide_dbl(n_contact_registered, mean, .before = 2))
+  )
+
+
+r_est_prov_list <-map(inc_prov, 
+                   function(y)
+                     {map(options, 
+                          function(x){
+                            wallinga_teunis(
+                              incid = y$count,
+                              method = "parametric_si", 
+                              config = list(mean_si = 15.3/7,
+                                            std_si = 7.3/7,
+                                            method = "parametric_si",
+                                            n_sim = 100,
+                                            t_start = x[[1]],
+                                            t_end = x[[2]], 
+                                            seed = 3684))
+                            })})
+
+
+
+province_plots <- map2(r_est_prov_list,
+          inc_prov,
+         function(x, z){
+           prov_db <- map(x, 
+                          function(y){
+                            as.data.frame(y[["R"]])[, c("t_start",
+                                  "Mean(R)",
+                                  "Std(R)", 
+                                  "Quantile.0.025(R)",
+                                  "Quantile.0.975(R)")]}) %>%
+             set_names(names(.)) %>% 
+             bind_rows(.id = "config")
+           
+           
+           epi_curve <- ggplot(z)+
+  geom_col(aes(x = n, y = count), fill = "grey", color = "black")+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = NULL, 
+       y = "Cases", 
+       title = "Epidemiological Curve")
+           
+           b <- ggplot(prov_db)+
+             geom_line(aes(x = t_start, 
+                y = `Mean(R)`, 
+                group = config, 
+                color = config), 
+            linewidth = 1.2,
+            alpha = 0.6)+
+  geom_hline(yintercept = 1, linetype = "dashed")+
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, max_n))+
+  labs(x = "Week Number", 
+       color = "Configuration", 
+       title = "Estimated R")
+
+cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
+                   rel_heights = c(1,-0.05, 1),
+                   align = "hv", 
+                   axis = "tblr")  
+})
+  
+```
+
+## Ituri
+```{r}
+province_plots[["ituri"]]
+```
+
+## North Kivu
+```{r}
+province_plots[["nord_kivu"]]
+```
+
+```{r}
+
+inc_zone <- inc_1 %>% 
+  mutate(name = paste0(province, "_", zone_de_sante)) %>% 
+  filter(name != "unknown_nyankunde") %>% 
+  split(.$name) %>% 
+  map(~.x %>% 
+  group_by(iso_week) %>% 
+  summarise(count = n(), 
+            n_community_death = sum(community_death, na.rm = TRUE)/sum(!is.na(community_death)), 
+            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE)/sum(!is.na(isolation_binary)), 
+            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE)/
+              sum(contact_registered %in% c("no", "yes"), na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  right_join(years_weeks, by = c("iso_week" = "value")) %>% 
+  mutate(count = case_when(is.na(count) ~ 0, 
+                           .default = count), 
+         iso_week = factor(iso_week, levels = sort(.$iso_week))) %>% 
+  arrange(iso_week) %>% 
+  mutate(n = row_number(), 
+         community_death_slider = slide_dbl(n_community_death, mean, .before = 2), 
+         isolation_slider = slide_dbl(n_isolated_early, mean, .before = 2), 
+         contact_slider = slide_dbl(n_contact_registered, mean, .before = 2))
+  )
+
+zone_remove <- map(inc_zone, 
+      ~.x %>% 
+      summarise(weeks_w_cases = sum(count != 0))) %>% 
+  bind_rows(.id = "name") %>% 
+  filter(weeks_w_cases < 5)
+
+inc_zone1 <- inc_zone %>% 
+  discard_at(zone_remove$name)
+
+r_est_zone_list <-map(inc_zone1, 
+                   function(y)
+                     {map(options, 
+                          function(x){
+                            estimate_R(
+                              incid = y$count,
+                              method = "parametric_si", 
+                              config = make_config(list(mean_si = 15.3/7,
+                                            std_si = 7.3/7,
+                                          #  method = "parametric_si",
+                                          #  n_sim = 100,
+                                            t_start = x[[1]],
+                                            t_end = x[[2]]
+                                           # seed = 3684
+                                          )))
+                            })})
+
+
+
+zone_plots <- map2(r_est_zone_list,
+          inc_zone1,
+         function(x, z){
+           prov_db <- map(x, 
+                          function(y){
+                            as.data.frame(y[["R"]])[, c("t_start",
+                                  "Mean(R)",
+                                  "Std(R)", 
+                                  "Quantile.0.025(R)",
+                                  "Quantile.0.975(R)")]}) %>%
+             set_names(names(.)) %>% 
+             bind_rows(.id = "config")
+           
+           
+           epi_curve <- ggplot(z)+
+  geom_col(aes(x = n, y = count), fill = "grey", color = "black")+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 104))+
+  labs(x = NULL, 
+       y = "Cases", 
+       title = "Epidemiological Curve")
+           
+           b <- ggplot(prov_db)+
+             geom_line(aes(x = t_start, 
+                y = `Mean(R)`, 
+                group = config, 
+                color = config), 
+            linewidth = 1.2,
+            alpha = 0.6)+
+  geom_hline(yintercept = 1, linetype = "dashed")+
+  scale_color_manual(values = c("#a07157", 
+                                "#849BA1", 
+                                "#b0dbe2", 
+                                "#a7568f"))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, max_n))+
+  labs(x = "Week Number", 
+       color = "Configuration", 
+       title = "Estimated R")
+
+cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
+                   rel_heights = c(1,-0.05, 1),
+                   align = "hv", 
+                   axis = "tblr")  
+})
+  
+?estimate_R
+
+
+```
+
