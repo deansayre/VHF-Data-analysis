@@ -16,18 +16,26 @@ output:
 
 ```{r setup, include=FALSE}
 
+
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
                       fig.width = 10, fig.height = 8)
 
+pacman::p_load(EpiEstim, 
+               rio, 
+               slider,
+               tidyverse)
+
 ```
 
+# {.tabset}
 
-# Data loading and wrangling
+## Data loading and wrangling
 
 ```{r}
 
-linelist <- rio::import(here::here("data", "Ebola_North_kivu_10th_outbreak_2018", 
-                       "master_linelist_current - deidentified fo 2026.xlsx"))
+linelist <- rio::import(here::here("data", 
+                                   "Ebola_North_kivu_10th_outbreak_2018", 
+                                   "master_linelist_current - deidentified fo 2026.xlsx"))
 
 
 ditch_weeks <- map(seq(1,isoweek(min(linelist$onset_calc, na.rm = TRUE))-1,1), 
@@ -63,11 +71,21 @@ years_weeks <- map(years,
 inc_1 <- inc_pre %>% 
   mutate(
          date_onset = ymd(onset_calc), 
-         iso_week = paste0(isoyear(onset_calc), "_W", str_pad(isoweek(onset_calc), side = "left", pad ="0", width =  2)), 
+         iso_week = paste0(isoyear(onset_calc), "_W", str_pad(isoweek(onset_calc), 
+                                                              side = "left",
+                                                              pad ="0", 
+                                                              width =  2)), 
          isolation_binary = case_when(community_death == 1|delay_admission > 3 ~ "no", 
                                       delay_admission <= 3 ~ "yes")
          ) 
 ```
+
+This is a boring tab unless you want to dig into the code... see show button (↑→)
+if curious
+
+## Country-wide
+
+### Epi curve and estimated reproduction number over time
 
 
 ```{r}
@@ -123,12 +141,27 @@ r_est_i_list <-map(options,
         method = "parametric_si", 
         config = list(mean_si = 15.3/7,
                 std_si = 7.3/7,
-                method = "parametric_si",
+             #   method = "parametric_si",
                 n_sim = 100,
                 t_start = x[[1]],
                 t_end = x[[2]], 
                 seed = 3684))
     })
+
+
+r_est_i_list_cori <-map(options, 
+    function(x){
+      estimate_R(
+        incid = cases_d_i,
+        method = "parametric_si", 
+        config = list(mean_si = 15.3/7,
+                std_si = 7.3/7,
+                t_start = x[[1]],
+                t_end = x[[2]]))
+    }) %>% 
+  set_names(map(names(options), ~paste0(.x, "_cori")))
+
+r_est_i_list1 <- append(r_est_i_list, r_est_i_list_cori)
 
 # r_est_i1 <- wallinga_teunis(
 #   incid = cases_d_i,
@@ -143,14 +176,17 @@ r_est_i_list <-map(options,
 #   )
 
 
-a <- map(r_est_i_list, 
+a <- map(r_est_i_list1, 
     ~as.data.frame(.x[["R"]])[, c("t_start",
                                   "Mean(R)",
                                   "Std(R)", 
                                   "Quantile.0.025(R)",
                                   "Quantile.0.975(R)")]) %>% 
-      set_names(names(r_est_i_list)) %>% 
-  bind_rows(.id = "config")
+      set_names(names(r_est_i_list1)) %>% 
+  bind_rows(.id = "config") %>% 
+  mutate(model = case_when(str_detect(config, "_cori") ~ "Cori", 
+                           .default = "Wallinga Teunis"), 
+         color = str_remove_all(config, "_cori"))
 
 max_n <- max(inc$n)
 
@@ -166,7 +202,8 @@ b <- ggplot(a)+
   geom_line(aes(x = t_start, 
                 y = `Mean(R)`, 
                 group = config, 
-                color = config), 
+                color = color, 
+                linetype = model), 
             linewidth = 1.2,
             alpha = 0.6)+
   geom_hline(yintercept = 1, linetype = "dashed")+
@@ -178,6 +215,7 @@ b <- ggplot(a)+
   coord_cartesian(xlim = c(0, max_n))+
   labs(x = "Week Number", 
        color = "Configuration", 
+       linetype = "R Model", 
        title = "Estimated R")
 
 cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
@@ -188,9 +226,62 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
 
 ```
 
-## Indicators over time {.tabset}
+There are some differences in estimations by method and parameters used 
+unsurprisingly, though this is not terribly drastic.
+
+A note on the 'Configuration' colors. The terms 'seq' (sequential) and 'overlap'
+refer to the windows used to generate R estimates. The estimations require  time
+windows--both start and stop. For the 'seq', these windows abut, but do not share
+any weeks/data in common (e.g., Window 1 consists of weeks 1,2, & 3; Window 2 
+consists of weeks 4,5, & 6). For those designated 'overlap' there is still a 
+window, but estimates are generated for each week, meaning that data are shared
+across multiple estimates (e.g., Window 1 = week 1, 2, & 3; Window 2 = week 2, 
+3, & 4). The overlap windows produce more granular estimates, but are less 
+independent from one another. 
+
+The number refers to the width of the window.
+
+The line type refers to the estimator used to generate the R from documented 
+serial interval for EVD (gamma distribution, mean = 15.3 days, 
+SD = 7.3 days; Jombart T, Jarvis CI, Mesfin S, et al. The cost of 
+insecurity: from flare-up to control of a major Ebola virus disease hotspot 
+during the outbreak in the Democratic Republic of the Congo, 2019.
+Euro Surveill 2020; 25: 1900735). "Cori" underlies the EpiEstim::estimate_R() 
+(Cori, A. et al. A new framework and software to estimate time-varying 
+reproduction numbers during epidemics (AJE 2013))
+
+### Indicators over time {.tabset .tabset-pills}
+
+Note that the configuration scheme is the same. In these instances this refers
+to the windows and frequency over which indicators are aggregated (e.g., if the
+Rt is estimated using weeks 3, 4, & 5, indicators are also aggregated over those
+weeks).
 
 ```{r}
+
+# code to lag indicators relative to Rt estimates, but not to be done here
+
+
+#  test <- map(options, 
+#      ~map2(.x[[1]], .x[[2]], 
+#            function(a,b) {
+#              
+#              gap <- b-a
+#              start <- max(a-gap, 1)
+#              
+#              inc %>% 
+#                slice(start:a) %>% 
+#                summarise(community_death_prop = sum(n_community_death, na.rm = TRUE)/
+#                            sum(community_death_den, na.rm = TRUE), 
+#                          isolated_early_prop = sum(n_isolated_early, na.rm = TRUE)/
+#                            sum(isolated_early_den, na.rm = TRUE), 
+#                          contact_prop = sum(n_contact_registered, na.rm = TRUE)/
+#                            sum(contact_registered_den, na.rm = TRUE))
+#            }) %>% 
+#        bind_rows() %>% 
+#        mutate(n = row_number())) %>% 
+#    set_names(names(options))
+
 
 a1 <- map(options, 
     ~map2(.x[[1]], .x[[2]], 
@@ -216,7 +307,7 @@ graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>%
 
 ```
 
-### Community Deaths
+#### Community Deaths
 
 ```{r}
 
@@ -238,12 +329,12 @@ ggplot(graph_indicator)+
 ```
 
 
-### Known contact of case at time of diagnosis
+#### Known contact of case at time of diagnosis
 
 ```{r}
 
 ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))
+  geom_line(aes(x = x, y = contact_prop, group = algo, color = algo))+
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
                                 "#b0dbe2", 
@@ -259,12 +350,12 @@ ggplot(graph_indicator)+
 
 ```
 
-### Early Isolation
+#### Early Isolation
 
 ```{r}
 
 ggplot(graph_indicator)+
-  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))
+  geom_line(aes(x = x, y = isolated_early_prop, group = algo, color = algo))+
   scale_color_manual(values = c("#a07157", 
                                 "#849BA1", 
                                 "#b0dbe2", 
@@ -283,6 +374,7 @@ ggplot(graph_indicator)+
 
 
 ```{r}
+
 
 inc_prov <- inc_1 %>% 
   filter(province != "unknown") %>% 
@@ -290,20 +382,20 @@ inc_prov <- inc_1 %>%
   map(~.x %>% 
   group_by(iso_week) %>% 
   summarise(count = n(), 
-            n_community_death = sum(community_death, na.rm = TRUE)/sum(!is.na(community_death)), 
-            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE)/sum(!is.na(isolation_binary)), 
-            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE)/
-              sum(contact_registered %in% c("no", "yes"), na.rm = TRUE)) %>% 
+            n_community_death = sum(community_death, na.rm = TRUE), 
+            community_death_den = sum(!is.na(community_death)), 
+            n_isolated_early = sum(isolation_binary == "yes", na.rm = TRUE), 
+            isolated_early_den = sum(!is.na(isolation_binary)), 
+            n_contact_registered = sum(contact_registered == "yes", na.rm = TRUE), 
+            contact_registered_den = sum(contact_registered %in% c("no", "yes"), 
+                                         na.rm = TRUE)) %>% 
   ungroup() %>% 
   right_join(years_weeks, by = c("iso_week" = "value")) %>% 
   mutate(count = case_when(is.na(count) ~ 0, 
                            .default = count), 
          iso_week = factor(iso_week, levels = sort(.$iso_week))) %>% 
   arrange(iso_week) %>% 
-  mutate(n = row_number(), 
-         community_death_slider = slide_dbl(n_community_death, mean, .before = 2), 
-         isolation_slider = slide_dbl(n_isolated_early, mean, .before = 2), 
-         contact_slider = slide_dbl(n_contact_registered, mean, .before = 2))
+  mutate(n = row_number())
   )
 
 
@@ -316,16 +408,31 @@ r_est_prov_list <-map(inc_prov,
                               method = "parametric_si", 
                               config = list(mean_si = 15.3/7,
                                             std_si = 7.3/7,
-                                            method = "parametric_si",
                                             n_sim = 100,
                                             t_start = x[[1]],
                                             t_end = x[[2]], 
                                             seed = 3684))
                             })})
 
+r_est_prov_list_cori <-map(inc_prov, 
+                   function(y)
+                     {map(options, 
+                          function(x){
+                            estimate_R(
+                              incid = y$count,
+                              method = "parametric_si", 
+                              config = list(mean_si = 15.3/7,
+                                            std_si = 7.3/7,
+                                            t_start = x[[1]],
+                                            t_end = x[[2]]))
+                            }) %>% 
+                       set_names(map(names(options), ~paste0(.x, "_cori")))
+                   })
+
+r_prov_list <- map2(r_est_prov_list, r_est_prov_list_cori, append)
 
 
-province_plots <- map2(r_est_prov_list,
+province_plots <- map2(r_prov_list,
           inc_prov,
          function(x, z){
            prov_db <- map(x, 
@@ -336,7 +443,10 @@ province_plots <- map2(r_est_prov_list,
                                   "Quantile.0.025(R)",
                                   "Quantile.0.975(R)")]}) %>%
              set_names(names(.)) %>% 
-             bind_rows(.id = "config")
+             bind_rows(.id = "config") %>% 
+             mutate(model = case_when(str_detect(config, "_cori") ~ "Cori", 
+                           .default = "Wallinga Teunis"), 
+                    color = str_remove_all(config, "_cori"))
            
            
            epi_curve <- ggplot(z)+
@@ -351,7 +461,8 @@ province_plots <- map2(r_est_prov_list,
              geom_line(aes(x = t_start, 
                 y = `Mean(R)`, 
                 group = config, 
-                color = config), 
+                color = color, 
+                linetype = model), 
             linewidth = 1.2,
             alpha = 0.6)+
   geom_hline(yintercept = 1, linetype = "dashed")+
@@ -363,6 +474,7 @@ province_plots <- map2(r_est_prov_list,
   coord_cartesian(xlim = c(0, max_n))+
   labs(x = "Week Number", 
        color = "Configuration", 
+       linetype = "Model",
        title = "Estimated R")
 
 cowplot::plot_grid(epi_curve, NULL, b, ncol = 1, 
@@ -373,15 +485,58 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
   
 ```
 
-## Ituri
+
+## By Province {.tabset}
+
+### Epi curve and estimated reproduction number over time {.tabset.tabset-pills}
+
+#### Ituri
 ```{r}
 province_plots[["ituri"]]
 ```
 
-## North Kivu
+#### North Kivu
+
 ```{r}
 province_plots[["nord_kivu"]]
 ```
+
+
+
+### Indicators over time {.tabset.tabset-pills}
+
+```{r}
+inc_prov
+
+a2 <- map(options, 
+          ~map2(.x[[1]], .x[[2]], 
+                
+                      function(a,b) {
+                        inc_prov[[1]] %>% 
+                          slice(a:b) %>% 
+                          summarise(community_death_prop = sum(n_community_death, 
+                                                               na.rm = TRUE)/
+                                      sum(community_death_den, na.rm = TRUE), 
+                                    isolated_early_prop = sum(n_isolated_early, 
+                                                              na.rm = TRUE)/
+                                      sum(isolated_early_den, na.rm = TRUE), 
+                                    contact_prop = sum(n_contact_registered, 
+                                                       na.rm = TRUE)/
+                                      sum(contact_registered_den, na.rm = TRUE))
+                        }) %>% 
+      bind_rows() %>% 
+      mutate(n = row_number()) %>% 
+  set_names(names(options)))
+
+
+graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+                       mutate(n = row_number())), 
+     ~left_join(.x, .y, by = "n")) %>% 
+  bind_rows(.id = "algo")
+
+```
+
+
 
 ```{r}
 
@@ -481,8 +636,7 @@ cowplot::plot_grid(epi_curve, NULL, b, ncol = 1,
                    align = "hv", 
                    axis = "tblr")  
 })
-  
-?estimate_R
+
 
 
 ```
