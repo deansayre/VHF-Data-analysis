@@ -23,6 +23,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
 pacman::p_load(EpiEstim, 
                rio, 
                slider,
+               forecast,
                tidyverse)
 
 ```
@@ -176,7 +177,7 @@ r_est_i_list1 <- append(r_est_i_list, r_est_i_list_cori)
 #   )
 
 
-a <- map(r_est_i_list1, 
+r_nation <- map(r_est_i_list1, 
     ~as.data.frame(.x[["R"]])[, c("t_start",
                                   "Mean(R)",
                                   "Std(R)", 
@@ -198,7 +199,7 @@ epi_curve <- ggplot(inc)+
        y = "Cases", 
        title = "Epidemiological Curve")
 
-b <- ggplot(a)+
+b <- ggplot(r_nation)+
   geom_line(aes(x = t_start, 
                 y = `Mean(R)`, 
                 group = config, 
@@ -300,7 +301,7 @@ a1 <- map(options,
   set_names(names(options))
 
 
-graph_indicator <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
+graph_indicator_nation <- map2(a1, map(options, ~tibble(x = pluck(.x, 1)) %>% 
                        mutate(n = row_number())), 
      ~left_join(.x, .y, by = "n")) %>% 
   bind_rows(.id = "algo")
@@ -796,8 +797,8 @@ indicator_panel <- map(graph_indicator_zs,
                                     "Known Contacts", 
                                     "Isolated Early"))
       return(out)
-      
-    })
+      }
+    )
 
 plots_out <- map2(zone_plots, indicator_panel, 
      ~cowplot::plot_grid(.x, .y, ncol = 2, align = "hv", axis = "tblr")) %>% 
@@ -820,5 +821,134 @@ plots_out <- map2(zone_plots, indicator_panel,
 
 ```{r results = 'asis'}
 walk2(plots_out, names(plots_out), ~make_tab(.x, .y))
+```
+
+
+## Cross Correlation
+For assessment of lags in associations
+
+```{r}
+library()
+
+wt_2 <- r_nation %>% 
+  filter(model == "Wallinga Teunis", config == "seq_2") %>% 
+  left_join(graph_indicator_nation %>% 
+              filter(algo == "seq_2"), 
+            by = c("t_start" = "x"))
+
+
+
+non_na_db <- function(db = wt_2, 
+                        week = "t_start",
+                        var1 = "Mean(R)", 
+                        var2){
+  
+  a <- db %>% 
+    filter(!is.na(.data[[var1]]) & !is.na(.data[[var2]])) 
+  
+  vec0 <- a[[week]]
+  vec1 <- a[[var1]]
+  vec2 <- a[[var2]]
+  
+  out <- tibble(week = vec0, 
+                R = vec1, 
+                ind_prop = vec2)
+  
+  return(out)
+}
+
+lag_corr <- map(list("community_death_prop", 
+         "isolated_early_prop", 
+         "contact_prop"), 
+    function(a){
+      non_nas <- non_na_db(var2 = a)
+      
+      ind <- non_nas$ind_prop
+      rt_wt2 <- non_nas$R
+      
+      fit_x <- auto.arima(ind)
+      x_white <- residuals(fit_x)
+      
+      fit_y <- Arima(rt_wt2, model = fit_x)
+      y_white <- residuals(fit_y)
+      
+      test_white <- Ccf(x_white, y_white, lag.max = 6, plot = FALSE)
+      
+      out <- tibble(lag = test_white[["lag"]], 
+             acf = test_white[["acf"]]) %>% 
+        mutate(abs_acf = abs(acf))
+             
+      return(out)       
+    }) %>% 
+  set_names("community_death_prop", 
+            "isolated_early_prop", 
+            "contact_prop")
+
+non_na_1 <- map(list("community_death_prop", 
+         "isolated_early_prop", 
+         "contact_prop"), 
+         
+      ~wt_2 %>% 
+        select("t_start", "Mean(R)", .x) %>% 
+        rename(ind = 3)
+    ) %>% 
+  set_names("community_death_prop", 
+            "isolated_early_prop", 
+            "contact_prop") 
+
+
+test <- map2(non_na_1, 
+     list(list(0,2),  
+          list(0,2),  
+          list(0,4)), 
+     function(a,b){
+       map(b, 
+           function(b1){
+             a %>% 
+               mutate(lag_ind = lag(ind, n = b1), 
+                      rt_lt_1 = case_when(`Mean(R)` < 1 ~ 1, 
+                                          `Mean(R)` >= 1 ~ 0, 
+                                          .default = NA), 
+                      time = factor(t_start, levels = seq(2,94, 2), 
+                                    ordered = TRUE))
+           })
+     })
+
+
+test1 <- map2(test, 
+              list(map(list(0,2), ~paste0("lag_", .x)), 
+                   map(list(0,2), ~paste0("lag_", .x)),
+                   map(list(0,4), ~paste0("lag_", .x))), 
+              function(a,b){
+                a %>% 
+                  set_names(b)
+                })
+
+
+
+
+
+```
+
+## Modeling for association
+
+```{r}
+
+library(glmmTMB)
+
+nested_logit_models <- map(test1, 
+                           ~map(.x, 
+                                function(a){glmmTMB(rt_lt_1 ~ lag_ind + 
+                                                      ar1(time + 0 | 1),
+                                                    #  (1 | province/health_zone),  
+                                                    family = binomial,
+                                                    data = a)}
+                                )
+                           )
+
+summaries <- map(nested_logit_models, 
+                           ~map(.x, ~summary(.x))
+)
+
 ```
 
