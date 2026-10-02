@@ -24,6 +24,7 @@ pacman::p_load(EpiEstim,
                rio, 
                slider,
                forecast,
+               glmmTMB,
                tidyverse)
 
 ```
@@ -376,7 +377,6 @@ ggplot(graph_indicator)+
 
 
 ```
-
 
 
 
@@ -930,11 +930,12 @@ test1 <- map2(test,
 
 ```
 
-## Modeling for association
+## Modeling for association {.tabset}
+
+### Nation-wide
 
 ```{r}
 
-library(glmmTMB)
 
 nested_logit_models <- map(test1, 
                            ~map(.x, 
@@ -950,5 +951,156 @@ summaries <- map(nested_logit_models,
                            ~map(.x, ~summary(.x))
 )
 
+```
+
+### Province-wide
+
+```{r}
+
+ind_prov <- map(graph_indicator_prov,
+                ~.x %>% 
+                  filter(algo == "seq_2") %>% 
+                  select(-c(algo, n))
+                  )
+
+                      
+
+prov_r <- map(r_prov_list, 1) %>% 
+  map2(ind_prov, 
+       ~.x[["R"]] %>% 
+        select(t_start, `Mean(R)`) %>% 
+         left_join(.y, by = c("t_start" = "x")) %>% 
+         mutate(rt_lt_1 = case_when(`Mean(R)` < 1 ~ 1, 
+                                          `Mean(R)` >= 1 ~ 0, 
+                                          .default = NA)))
+
+time_prov <- map(prov_r, 
+    ~tibble(max = max(.x$t_start, na.rm = TRUE), 
+            min = min(.x$t_start, na.rm = TRUE))) %>% 
+  bind_rows(.id = "prov")
+
+
+prov_r_with_lag <- map(prov_r, 
+                       ~.x %>% 
+                         mutate(community_death_prop_lag = lag(community_death_prop, n = 2), 
+                                isolated_early_prop_lag = lag(isolated_early_prop, n = 2), 
+                                contact_prop_lag = lag(contact_prop, n = 4), 
+                                time = factor(t_start, 
+                                              levels = seq(min(time_prov$min), 
+                                                           max(time_prov$max),
+                                                           2), 
+                                              ordered = TRUE))) %>% 
+  discard_at("sud_kivu") %>% 
+  bind_rows(.id = "province")
+
+
+threshold_grid <- seq(0.1, 0.9, by = 0.05)  
+
+threshold_results <- map(threshold_grid, 
+                             function(thresh){
+                               map(list("community_death_prop", 
+                                           "community_death_prop_lag", 
+                                           "isolated_early_prop", 
+                                           "isolated_early_prop_lag", 
+                                           "contact_prop", 
+                                           "contact_prop_lag"), 
+                              function(b){
+                                db <- prov_r_with_lag %>% 
+                                  mutate(above_thresh = as.numeric(.data[[b]] >= thresh))
+                                
+                                form <- as.formula(paste("rt_lt_1 ~ above_thresh",
+                                                         "+ ar1(time + 0 | province)",
+                                                         "+ (1 | province)"))
+                                model <- tryCatch(
+                                  glmmTMB(form, family = binomial,
+                                          data = db), 
+                                  error = function(e) NULL
+                                )
+                                
+                                if (is.null(model)) return(tibble(threshold = thresh, 
+                                                                  aic = NA, 
+                                                                  estimate = NA, 
+                                                                  p = NA))
+                                
+                                cc <- summary(model)$coefficients$cond
+                                
+                                tibble(inidicator = b, 
+                                       threshold = thresh,
+                                       aic = AIC(model),
+                                       estimate = cc["above_thresh", "Estimate"],
+                                       p = cc["above_thresh", "Pr(>|z|)"])
+                              }     
+                                   ) 
+                               }
+                         ) %>% 
+  bind_rows() %>% 
+  bind_rows()
+
+
+nested_logit_models_prov <- map(list("community_death_prop", 
+                                           "community_death_prop_lag", 
+                                           "isolated_early_prop", 
+                                           "isolated_early_prop_lag", 
+                                           "contact_prop", 
+                                           "contact_prop_lag"), 
+                                function(b){
+                                        form <- as.formula(
+                                          paste0("rt_lt_1 ~", b,
+                                                 "+ ar1(time + 0 | province) + 
+                                                 (1 | province)"))
+                                      glmmTMB(form,  
+                                              family = binomial,
+                                              data = prov_r_with_lag)}
+                                )
+
+
+
+threshold_results <- map_dfr(threshold_grid, 
+                             function(thresh){
+                               df$above_thresh <- as.numeric(df$indicator >= thresh)
+                               
+                               m <- tryCatch(
+    glmmTMB(rt_lt_1 ~ above_thresh + ar1(time + 0 | health_zone) + (1 | province/health_zone),
+            family = binomial, data = df),
+    error = function(e) NULL
+  )
+  if (is.null(m)) return(tibble(threshold = thresh, aic = NA, estimate = NA, p = NA))
+  
+  cc <- summary(m)$coefficients$cond
+  tibble(
+    threshold = thresh,
+    aic = AIC(m),
+    estimate = cc["above_thresh", "Estimate"],
+    p = cc["above_thresh", "Pr(>|z|)"]
+  )
+})
+
+threshold_results %>% arrange(aic)
+
+
+nested_logit_models_prov <- map(list("community_death_prop", 
+                                           "community_death_prop_lag", 
+                                           "isolated_early_prop", 
+                                           "isolated_early_prop_lag", 
+                                           "contact_prop", 
+                                           "contact_prop_lag"), 
+                                      function(b){
+                                        form <- as.formula(paste0("rt_lt_1 ~", b,
+                                                                  "+ ar1(time + 0 | province) +                                               (1 | province)"))
+                                      glmmTMB(form,  
+                                              family = binomial,
+                                              data = prov_r_with_lag)}
+                                )
+
+
+
+
+
+
+                           
+
+summaries <- map(nested_logit_models, 
+                           ~map(.x, ~summary(.x))
+)
 ```
 
